@@ -20,6 +20,7 @@ from .methods import specaugment
 AUGMENTATIONS = {
     "freq_masking": specaugment.FreqMasking,
     "time_masking": specaugment.TimeMasking,
+    "time_warp": specaugment.TimeWarp,
 }
 
 
