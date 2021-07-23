@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import tensorflow as tf
-from tensorflow_addons.image import sparse_image_warp
 
+from experiments.ml.specaugment.conformer.util import sparse_image_warp
 from ...utils import shape_util
 from .base_method import AugmentationMethod
 
@@ -94,14 +94,14 @@ class TimeWarp(AugmentationMethod):
             tf.print("Spectrogram too short (len = ", tau, ") for time_warping_para`m = ", self.warp_factor,
                      ". Skipping warping.")
             return spectrogram
-        generator = tf.random.get_global_generator()
+        # generator = tf.random.get_global_generator()
         center_height = height / 2
 
         with tf.name_scope('warping'):
-            random_point = generator.uniform(minval=self.warp_factor, maxval=tau - self.warp_factor, dtype=tf.int32,
+            random_point = tf.random.uniform(minval=self.warp_factor, maxval=tau - self.warp_factor, dtype=tf.int32,
                                              shape=(),
                                              name='get_random_point')
-            w = generator.uniform(minval=0, maxval=self.warp_factor, dtype=tf.int32, shape=(), name='get_warping_factor')
+            w = tf.random.uniform(minval=0, maxval=self.warp_factor, dtype=tf.int32, shape=(), name='get_warping_factor')
 
             control_point_locations = tf.convert_to_tensor([[[random_point, center_height],
                                                              [0, center_height],
