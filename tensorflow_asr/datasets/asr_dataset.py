@@ -97,6 +97,8 @@ class ASRDataset(BaseDataset):
                         content = json.loads(f.read()).get(self.stage, {})
                     except json.JSONDecodeError:
                         raise ValueError(f'File {metadata} must be in json format')
+            else:
+                raise ValueError(f'Metadata file not found: {metadata}')
         if not content:
             return
         self.speech_featurizer.update_length(int(content.get("max_input_length", 0)))
