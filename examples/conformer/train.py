@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import math
 import argparse
-from tensorflow_asr.utils import env_util
+import math
+import os
+
+from experiments.ml.specaugment.conformer.TensorFlowASR.tensorflow_asr.utils import env_util
+from experiments.ml.specaugment.conformer.dataset import SnapshotDataset
 
 logger = env_util.setup_environment()
 import tensorflow as tf
@@ -27,38 +29,66 @@ tf.keras.backend.clear_session()
 parser = argparse.ArgumentParser(prog="Conformer Training")
 
 parser.add_argument("--config", type=str, default=DEFAULT_YAML, help="The file path of model configuration file")
-
 parser.add_argument("--tfrecords", default=False, action="store_true", help="Whether to use tfrecords")
-
 parser.add_argument("--sentence_piece", default=False, action="store_true", help="Whether to use `SentencePiece` model")
-
 parser.add_argument("--subwords", default=False, action="store_true", help="Use subwords")
-
 parser.add_argument("--bs", type=int, default=None, help="Batch size per replica")
-
 parser.add_argument("--spx", type=int, default=1, help="Steps per execution for maximizing performance")
-
 parser.add_argument("--metadata", type=str, default=None, help="Path to file containing metadata")
-
 parser.add_argument("--static_length", default=False, action="store_true", help="Use static lengths")
-
 parser.add_argument("--devices", type=int, nargs="*", default=[0], help="Devices' ids to apply distributed training")
-
 parser.add_argument("--mxp", default=False, action="store_true", help="Enable mixed precision")
-
 parser.add_argument("--pretrained", type=str, default=None, help="Path to pretrained model")
 
 args = parser.parse_args()
 
 tf.config.optimizer.set_experimental_options({"auto_mixed_precision": args.mxp})
 
-strategy = env_util.setup_strategy(args.devices)
+class LocalTPUClusterResolver(
+    tf.distribute.cluster_resolver.TPUClusterResolver):
+    """LocalTPUClusterResolver."""
 
-from tensorflow_asr.configs.config import Config
-from tensorflow_asr.datasets import asr_dataset
-from tensorflow_asr.featurizers import speech_featurizers, text_featurizers
-from tensorflow_asr.models.transducer.conformer import Conformer
-from tensorflow_asr.optimizers.schedules import TransformerSchedule
+    def __init__(self):
+        self._tpu = ''
+        self.task_type = 'worker'
+        self.task_id = 0
+
+    def master(self, task_type=None, task_id=None, rpc_layer=None):
+        return None
+
+    def cluster_spec(self):
+        return tf.train.ClusterSpec({})
+
+    def get_tpu_system_metadata(self):
+        return tf.tpu.experimental.TPUSystemMetadata(
+            num_cores=8,
+            num_hosts=1,
+            num_of_cores_per_host=8,
+            topology=None,
+            devices=tf.config.list_logical_devices())
+
+    def num_accelerators(self,
+                         task_type=None,
+                         task_id=None,
+                         config_proto=None):
+        return {'TPU': 8}
+
+
+def setup_tpu():
+    resolver = LocalTPUClusterResolver()
+    # resolver = tf.distribute.cluster_resolver.TPUClusterResolver('local')
+    tf.config.experimental_connect_to_cluster(resolver)
+    tf.tpu.experimental.initialize_tpu_system(resolver)
+    strategy = tf.distribute.TPUStrategy(resolver)
+    logger.info('Using TPU Strategy.')
+    return strategy
+
+strategy = setup_tpu()
+
+from experiments.ml.specaugment.conformer.TensorFlowASR.tensorflow_asr.configs.config import Config
+from experiments.ml.specaugment.conformer.TensorFlowASR.tensorflow_asr.featurizers import speech_featurizers, text_featurizers
+from experiments.ml.specaugment.conformer.TensorFlowASR.tensorflow_asr.models.transducer.conformer import Conformer
+from experiments.ml.specaugment.conformer.TensorFlowASR.tensorflow_asr.optimizers.schedules import TransformerSchedule
 
 config = Config(args.config)
 speech_featurizer = speech_featurizers.TFSpeechFeaturizer(config.speech_config)
@@ -73,42 +103,46 @@ else:
     logger.info("Use characters ...")
     text_featurizer = text_featurizers.CharFeaturizer(config.decoder_config)
 
-if args.tfrecords:
-    train_dataset = asr_dataset.ASRTFRecordDataset(
-        speech_featurizer=speech_featurizer,
-        text_featurizer=text_featurizer,
-        **vars(config.learning_config.train_dataset_config),
-        indefinite=True
-    )
-    eval_dataset = asr_dataset.ASRTFRecordDataset(
-        speech_featurizer=speech_featurizer,
-        text_featurizer=text_featurizer,
-        **vars(config.learning_config.eval_dataset_config),
-        indefinite=True
-    )
-else:
-    train_dataset = asr_dataset.ASRSliceDataset(
-        speech_featurizer=speech_featurizer,
-        text_featurizer=text_featurizer,
-        **vars(config.learning_config.train_dataset_config),
-        indefinite=True
-    )
-    eval_dataset = asr_dataset.ASRSliceDataset(
-        speech_featurizer=speech_featurizer,
-        text_featurizer=text_featurizer,
-        **vars(config.learning_config.eval_dataset_config),
-        indefinite=True
-    )
+train_dataset = SnapshotDataset(
+    speech_featurizer=speech_featurizer,
+    text_featurizer=text_featurizer,
+    **vars(config.learning_config.train_dataset_config),
+    indefinite=False,
+    num_elems_to_load=5000,
+    pipeline=[],
+    caching_period=0,
+    snapshot_path=None,
+    service_ip=None,
+    wav=True,
+    repeat_single_batch=True,
+)
+eval_dataset = SnapshotDataset(
+    speech_featurizer=speech_featurizer,
+    text_featurizer=text_featurizer,
+    **vars(config.learning_config.eval_dataset_config),
+    indefinite=False,
+    num_elems_to_load=5000,
+    pipeline=[],
+    caching_period=0,
+    snapshot_path=None,
+    service_ip=None,
+    wav=True,
+    repeat_single_batch=True,
+)
+metadata = {
+    "max_input_length": 2453,
+    "max_label_length": 398,
+    "num_entries": 28539
+}
+train_dataset.load_metadata(metadata)
+eval_dataset.load_metadata(metadata)
 
-train_dataset.load_metadata(args.metadata)
-eval_dataset.load_metadata(args.metadata)
-
-if not args.static_length:
-    speech_featurizer.reset_length()
-    text_featurizer.reset_length()
+# if not args.static_length:
+#     speech_featurizer.reset_length()
+#     text_featurizer.reset_length()
 
 global_batch_size = args.bs or config.learning_config.running_config.batch_size
-global_batch_size *= strategy.num_replicas_in_sync
+global_batch_size *= 8#strategy.num_replicas_in_sync
 
 train_data_loader = train_dataset.create(global_batch_size)
 eval_data_loader = eval_dataset.create(global_batch_size)
